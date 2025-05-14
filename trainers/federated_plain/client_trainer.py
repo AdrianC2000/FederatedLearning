@@ -3,25 +3,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from typing import Optional
 
-from opacus import PrivacyEngine
-
 from trainers.base_trainer import BaseTrainer
-from common.const import LEARNING_RATE, MOMENTUM, LOCAL_EPOCHS, EPSILON, DELTA, MAX_GRAD_NORM
+from common.const import LEARNING_RATE, MOMENTUM, LOCAL_EPOCHS
 from common.fml_utils import compute_loss_and_accuracy, remove_module_prefix
 from common.enum.aggregation_method import AggregationMethod
-
-
-class DPConfig:
-    def __init__(self, epsilon: float = EPSILON, delta: float = DELTA, max_grad_norm: float = MAX_GRAD_NORM):
-        self.epsilon = epsilon
-        self.delta = delta
-        self.max_grad_norm = max_grad_norm
 
 
 class ClientConfig:
     def __init__(
             self,
-            dp_config: DPConfig,
             learning_rate: float = LEARNING_RATE,
             momentum: float = MOMENTUM,
             epochs: int = LOCAL_EPOCHS,
@@ -31,14 +21,13 @@ class ClientConfig:
         self.learning_rate = learning_rate
         self.momentum = momentum
         self.epochs = epochs
-        self.dp_config = dp_config
         self.aggregation_method = aggregation_method
         self.fed_prox_mu = fed_prox_mu
 
 
 class TrainingResult:
     def __init__(self, client_update: dict, train_loss: float, train_acc: float):
-        self.client_update = client_update
+        self.client_update = client_update  # weights or gradients
         self.train_loss = train_loss
         self.train_acc = train_acc
 
@@ -52,27 +41,11 @@ class ClientTrainer(BaseTrainer):
         self.optimizer = optim.SGD(
             self.model.parameters(),
             lr=self.config.learning_rate,
-            momentum=self.config.momentum,
+            momentum=self.config.momentum
         )
-
-        self._enable_privacy()
-
         self.global_weights = (
             {name: param.detach().clone() for name, param in self.model.named_parameters()}
-            if self.config.fed_prox_mu is not None else None
-        )
-
-    def _enable_privacy(self) -> None:
-        dp = self.config.dp_config
-        privacy_engine = PrivacyEngine()
-        self.model, self.optimizer, self.train_loader = privacy_engine.make_private_with_epsilon(
-            module=self.model,
-            optimizer=self.optimizer,
-            data_loader=self.train_loader,
-            target_epsilon=dp.epsilon,
-            target_delta=dp.delta,
-            max_grad_norm=dp.max_grad_norm,
-            epochs=self.config.epochs,
+            if self.config.aggregation_method == AggregationMethod.FED_PROX else None
         )
 
     def _compute_prox_term(self) -> float:
@@ -92,7 +65,7 @@ class ClientTrainer(BaseTrainer):
                 output = self.model(x)
                 loss = self.criterion(output, y)
 
-                if self.config.fed_prox_mu is not None:
+                if self.config.aggregation_method == AggregationMethod.FED_PROX:
                     loss += (self.config.fed_prox_mu / 2) * self._compute_prox_term()
 
                 loss.backward()
@@ -106,10 +79,10 @@ class ClientTrainer(BaseTrainer):
     def train_step_sgd(self) -> TrainingResult:
         self.model.train()
 
-        weights_before = remove_module_prefix({
+        weights_before = {
             name: param.detach().clone()
             for name, param in self.model.named_parameters()
-        })
+        }
 
         x, y = next(iter(self.train_loader))
         self.optimizer.zero_grad()

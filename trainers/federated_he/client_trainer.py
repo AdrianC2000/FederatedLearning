@@ -1,81 +1,133 @@
-from typing import Optional, List
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from typing import Optional, Dict
+
 import tenseal as ts
-from common.utils import remove_module_prefix, compute_loss_and_accuracy
-from trainers.trainer import Trainer
-from tenseal import SCHEME_TYPE
+
+from trainers.base_trainer import BaseTrainer
+from common.const import LEARNING_RATE, MOMENTUM, LOCAL_EPOCHS, POLY_MODULUS_DEGREE, SCALE
+from common.fml_utils import compute_loss_and_accuracy, remove_module_prefix
+from common.enum.aggregation_method import AggregationMethod
+
 
 class HEConfig:
-    def __init__(self, poly_modulus_degree: int = 32768,
-                 coeff_mod_bit_sizes: list = [60, 40, 40, 60],
-                 scale: float = 2**35):
-        self.poly_modulus_degree = poly_modulus_degree
-        self.coeff_mod_bit_sizes = coeff_mod_bit_sizes
+    def __init__(
+            self,
+            scale: float = SCALE,
+            poly_modulus_degree: int = POLY_MODULUS_DEGREE,
+    ):
         self.scale = scale
-        self.encryption_scheme = SCHEME_TYPE.CKKS
+        self.poly_modulus_degree = poly_modulus_degree
+        self.coeff_mod_bit_sizes = [60, int(scale).bit_length() - 1, int(scale).bit_length() - 1, 60]
+        self.encryption_scheme = ts.SCHEME_TYPE.CKKS
+
 
 class ClientConfig:
-    def __init__(self, learning_rate: float = 0.003, momentum: float = 0.9, epochs: int = 3, he_config: Optional[HEConfig] = None):
+    def __init__(
+            self,
+            context: ts.Context,
+            learning_rate: float = LEARNING_RATE,
+            momentum: float = MOMENTUM,
+            epochs: int = LOCAL_EPOCHS,
+            aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
+            fed_prox_mu: Optional[float] = None,
+    ):
+        self.context = context
         self.learning_rate = learning_rate
         self.momentum = momentum
         self.epochs = epochs
-        self.he_config = he_config
+        self.aggregation_method = aggregation_method
+        self.fed_prox_mu = fed_prox_mu
+
 
 class TrainingResult:
-    def __init__(self, encrypted_weights: Optional[dict], decrypted_weights: Optional[dict], train_loss: float, train_acc: float):
-        self.encrypted_weights = encrypted_weights  # For HE
-        self.decrypted_weights = decrypted_weights  # For turned off HE
+    def __init__(self, encrypted_client_updates: Dict[str, ts.CKKSVector], train_loss: float, train_acc: float):
+        self.encrypted_client_updates = encrypted_client_updates
         self.train_loss = train_loss
         self.train_acc = train_acc
 
-class ClientTrainer(Trainer):
-    def __init__(self, model: nn.Module, train_loader: DataLoader, config: ClientConfig, context: Optional[ts.Context] = None) -> None:
+
+class ClientTrainer(BaseTrainer):
+    def __init__(self, model: nn.Module, train_loader: DataLoader, config: ClientConfig) -> None:
         self.model = model
         self.train_loader = train_loader
         self.config = config
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=config.learning_rate, momentum=config.momentum)
-
-        self.context = self._setup_he_context(config.he_config) if config.he_config else None
-        if context:
-            self.context = context
-
-    @staticmethod
-    def _setup_he_context(he_config: HEConfig) -> ts.Context:
-        context = ts.context(
-            scheme=SCHEME_TYPE.CKKS,
-            poly_modulus_degree=he_config.poly_modulus_degree,
-            coeff_mod_bit_sizes=he_config.coeff_mod_bit_sizes
+        self.optimizer = optim.SGD(
+            self.model.parameters(),
+            lr=self.config.learning_rate,
+            momentum=self.config.momentum,
         )
 
-        context.generate_galois_keys()
-        return context
-
-    def _encrypt_model_weights(self) -> dict:
-        encrypted_weights = {}
-
-        for name, param in self.model.state_dict().items():
-            values = param.view(-1).tolist()
-            encrypted_weights[name] = ts.ckks_vector(self.context, values, scale=self.config.he_config.scale)
-
-        return encrypted_weights
+        self.global_weights = (
+            {name: param.detach().clone() for name, param in self.model.named_parameters()}
+            if self.config.aggregation_method == AggregationMethod.FED_PROX else None
+        )
 
     def train(self) -> TrainingResult:
         self.model.train()
-        client_weights_before_he = remove_module_prefix(self.model.state_dict())
 
         for _ in range(self.config.epochs):
-            for data, target in self.train_loader:
+            for x, y in self.train_loader:
                 self.optimizer.zero_grad()
-                output = self.model(data)
-                loss = self.criterion(output, target)
+                output = self.model(x)
+                loss = self.criterion(output, y)
+
+                if self.config.aggregation_method == AggregationMethod.FED_PROX:
+                    loss += (self.config.fed_prox_mu / 2) * self._compute_prox_term()
+
                 loss.backward()
                 self.optimizer.step()
 
         train_acc, train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
+        weights_after = remove_module_prefix(self.model.state_dict())
 
-        encrypted_weights = self._encrypt_model_weights() if self.context else None
-        decrypted_weights = client_weights_before_he if not self.context else None
-        return TrainingResult(encrypted_weights, decrypted_weights, train_loss, train_acc)
+        encrypted_updates = {
+            name: ts.ckks_vector(self.config.context, tensor.view(-1).double().tolist())
+            for name, tensor in weights_after.items()
+        }
+
+        return TrainingResult(encrypted_updates, train_loss, train_acc)
+
+    def train_step_sgd(self) -> TrainingResult:
+        self.model.train()
+
+        weights_before = {
+            name: param.detach().clone()
+            for name, param in self.model.named_parameters()
+        }
+
+        x, y = next(iter(self.train_loader))
+        self.optimizer.zero_grad()
+        output = self.model(x)
+        loss = self.criterion(output, y)
+        loss.backward()
+        self.optimizer.step()
+
+        train_acc, train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
+
+        weights_after = {
+            name: param.detach().clone()
+            for name, param in self.model.named_parameters()
+        }
+
+        gradients = {
+            name: (weights_before[name] - weights_after[name]) / self.config.learning_rate
+            for name in weights_before
+        }
+
+        encrypted_gradients = {
+            name: ts.ckks_vector(self.config.context, grad.view(-1).double().tolist())
+            for name, grad in gradients.items()
+        }
+
+        return TrainingResult(encrypted_gradients, train_loss, train_acc)
+
+    def _compute_prox_term(self) -> float:
+        prox_term = 0.0
+        for name, param in self.model.named_parameters():
+            if name in self.global_weights:
+                global_param = self.global_weights[name]
+                prox_term += ((param - global_param) ** 2).sum()
+        return prox_term

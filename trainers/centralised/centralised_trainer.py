@@ -1,21 +1,26 @@
+import time
 from typing import List
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from common.model_wrapper import ModelWrapper
-from common.utils import compute_loss_and_accuracy
-from trainers.trainer import Trainer
+from common.model.model_wrapper import ModelWrapper
+from common.fml_utils import compute_loss_and_accuracy
+from common.const import LEARNING_RATE, MOMENTUM, CENTRALISED_EPOCHS
+from trainers.base_trainer import BaseTrainer
 
 
 class CentralizedConfig:
-    def __init__(self, learning_rate: float = 0.001, momentum: float = 0.9, epochs: int = 10):
+    def __init__(self,
+                 learning_rate: float = LEARNING_RATE,
+                 momentum: float = MOMENTUM,
+                 epochs: int = CENTRALISED_EPOCHS):
         self.learning_rate = learning_rate
         self.momentum = momentum
         self.epochs = epochs
 
-class CentralizedTrainer(Trainer):
-    def __init__(self, model: nn.Module, train_loader: DataLoader, test_loader: DataLoader, config: CentralizedConfig) -> None:
-        self.model = model
+class CentralizedTrainer(BaseTrainer):
+    def __init__(self, model_fn: callable, train_loader: DataLoader, test_loader: DataLoader, config: CentralizedConfig) -> None:
+        self.model = model_fn()
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.config = config
@@ -28,6 +33,8 @@ class CentralizedTrainer(Trainer):
         self.test_loss_history: List[float] = []
 
     def train(self) -> ModelWrapper:
+        start_time = time.time()
+
         for epoch in range(self.config.epochs):
             train_acc, train_loss = self._train_one_epoch()
             test_acc, test_loss = compute_loss_and_accuracy(self.model, self.test_loader, self.criterion)
@@ -43,7 +50,16 @@ class CentralizedTrainer(Trainer):
                 f"Test Acc: {test_acc:.2f}% | Test Loss: {test_loss:.4f}"
             )
 
-        return ModelWrapper(self.model, self.train_acc_history, self.train_loss_history, self.test_acc_history, self.test_loss_history)
+        exec_time = time.time() - start_time
+
+        return ModelWrapper(
+            model=self.model,
+            train_acc=self.train_acc_history,
+            train_loss=self.train_loss_history,
+            test_acc=self.test_acc_history,
+            test_loss=self.test_loss_history,
+            exec_time=exec_time
+        )
 
     def _train_one_epoch(self) -> tuple[float, float]:
         self.model.train()

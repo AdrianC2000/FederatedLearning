@@ -1,118 +1,183 @@
+import math
 import time
-from typing import Optional, List
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from typing import List, Dict
+from torch.utils.data import DataLoader
+
 import tenseal as ts
-from common.model_wrapper import ModelWrapper
-from common.simple_cnn import SimpleCNN
-from common.utils import compute_loss_and_accuracy, remove_module_prefix
-from trainers.federated_he.client_trainer import ClientConfig, ClientTrainer, TrainingResult, HEConfig
-from trainers.trainer import Trainer
+
+from common.const import NUM_CLIENTS, NUM_ROUNDS, LOCAL_EPOCHS, FED_PROX_MU, LEARNING_RATE
+from common.enum.aggregation_method import AggregationMethod
+from common.fml_utils import compute_loss_and_accuracy, split_dataset_stratified
+from common.model.model_wrapper import ModelWrapper
+from trainers.base_federated_trainer import BaseFederatedTrainer
+from trainers.federated_he.client_trainer import ClientTrainer, ClientConfig, HEConfig
+
 
 class FederatedConfig:
-    def __init__(self, num_clients: int, num_rounds: int = 15, local_epochs: int = 3, he_config: Optional[HEConfig] = None):
+    def __init__(
+            self,
+            he_config: HEConfig,
+            num_clients: int = NUM_CLIENTS,
+            num_rounds: int = NUM_ROUNDS,
+            local_epochs: int = LOCAL_EPOCHS,
+            learning_rate: float = LEARNING_RATE,
+            aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
+            fed_prox_mu: float = FED_PROX_MU,
+            seed: int = 42,
+    ):
+        self.he_config = he_config
         self.num_clients = num_clients
         self.num_rounds = num_rounds
         self.local_epochs = local_epochs
-        self.he_config = he_config
+        self.learning_rate = learning_rate
+        self.aggregation_method = aggregation_method
+        self.fed_prox_mu = fed_prox_mu
+        self.seed = seed
 
-class FederatedTrainer(Trainer):
-    def __init__(self, train_loader: DataLoader, test_loader: DataLoader, config: FederatedConfig) -> None:
+
+class FederatedTrainer(BaseFederatedTrainer):
+    def __init__(self, train_loader: DataLoader, test_loader: DataLoader, model_fn: callable, config: FederatedConfig):
+        super().__init__(config)
         self.config = config
-        self.global_model = SimpleCNN()
+        self.model_fn = model_fn
+        self.global_model = model_fn()
         self.test_loader = test_loader
 
-        split_sizes = [len(train_loader.dataset) // config.num_clients] * config.num_clients
-        self.client_datasets = random_split(train_loader.dataset, split_sizes)
-        self.client_loaders = [DataLoader(ds, batch_size=train_loader.batch_size, shuffle=False) for ds in self.client_datasets]
+        self.he_context = ts.context(
+            ts.SCHEME_TYPE.CKKS,
+            poly_modulus_degree=self.config.he_config.poly_modulus_degree,
+            coeff_mod_bit_sizes=self.config.he_config.coeff_mod_bit_sizes,
+        )
+        self.he_context.global_scale = self.config.he_config.scale
+        self.he_context.generate_galois_keys()
 
-        self.client_train_accuracies: List[float] = []
-        self.client_train_losses: List[float] = []
-        self.test_acc_history: List[float] = []
-        self.test_loss_history: List[float] = []
+        datasets = split_dataset_stratified(train_loader.dataset, config.num_clients, config.seed)
+        self.client_loaders = [DataLoader(ds, batch_size=train_loader.batch_size, shuffle=False) for ds in datasets]
 
-        self.context = self._setup_he_context(config.he_config) if config.he_config else None
+        self.client_train_accuracies = []
+        self.client_train_losses = []
+        self.test_acc_history = []
+        self.test_loss_history = []
 
-    @staticmethod
-    def _setup_he_context(he_config: HEConfig) -> ts.Context:
-        context = ts.context(he_config.encryption_scheme, poly_modulus_degree=he_config.poly_modulus_degree, coeff_mod_bit_sizes=he_config.coeff_mod_bit_sizes)
-        context.generate_galois_keys()
-        return context
+        self.adaptive_optimizer_state = {
+            "momentum_buffers": {},
+            "variance_buffers": {},
+            "step_count": 0
+        }
+
+        self.adjust_rounds_for_fed_sgd(train_loader)
 
     def train(self) -> ModelWrapper:
-        he_details = (
-            f"HE=True, poly_modulus_degree={self.config.he_config.poly_modulus_degree}, "
-            f"coeff_mod_bit_sizes={self.config.he_config.coeff_mod_bit_sizes}, "
-            f"scale={self.config.he_config.scale}"
-            if self.config.he_config else "HE=False"
+        he = self.config.he_config
+        print(
+            f"\n##### Running FL with HE | num_clients={self.config.num_clients}, "
+            f"num_rounds={self.config.num_rounds}, local_epochs={self.config.local_epochs}, "
+            f"learning_rate={self.config.learning_rate}, aggregation={self.config.aggregation_method.value.upper()}, "
+            f"poly_modulus_degree={he.poly_modulus_degree}, coeff_mod_bit_sizes={he.coeff_mod_bit_sizes}, "
+            f"scale=2^{int(round(math.log2(he.scale)))}"
+            f"{f', fed_prox_mu={self.config.fed_prox_mu}' if self.config.aggregation_method == AggregationMethod.FED_PROX else ''} #####\n"
         )
-
-        print(f"\n##### Running FL | num_clients={self.config.num_clients}, num_rounds={self.config.num_rounds}, "
-              f"local_epochs={self.config.local_epochs}, {he_details} #####\n")
-
         start_time = time.time()
 
         for round_num in range(self.config.num_rounds):
             print(f"======== Round {round_num + 1} ========")
-            client_weights_list = []
+            client_updates = [self._train_single_client(i) for i in range(self.config.num_clients)]
 
-            for index in range(self.config.num_clients):
-                self._train_single_client(client_weights_list, index)
-
-            self._calculate_global_model_fed_avg(client_weights_list)
-            global_test_acc, global_test_loss = compute_loss_and_accuracy(self.global_model, self.test_loader, nn.CrossEntropyLoss())
-
-            self.test_acc_history.append(global_test_acc)
-            self.test_loss_history.append(global_test_loss)
-            print(f"Global Model | Test Acc: {global_test_acc:.2f}% | Test Loss: {global_test_loss:.2f}\n")
+            self._aggregate(client_updates)
+            self._evaluate_global_model()
 
         exec_time = time.time() - start_time
-        return ModelWrapper(self.global_model, self.client_train_accuracies, self.client_train_losses, self.test_acc_history, self.test_loss_history, exec_time)
 
-    def _train_single_client(self, client_weights_list, index):
-        client_model = SimpleCNN()
+        return ModelWrapper(
+            self.global_model,
+            self.client_train_accuracies,
+            self.client_train_losses,
+            self.test_acc_history,
+            self.test_loss_history,
+            exec_time
+        )
+
+    def _train_single_client(self, index: int) -> Dict[str, ts.CKKSVector]:
+        client_model = self.model_fn()
         client_model.load_state_dict(self.global_model.state_dict())
-        client_model.train()
 
-        client_config = ClientConfig(epochs=self.config.local_epochs, he_config=self.config.he_config)
-        client_trainer = ClientTrainer(client_model, self.client_loaders[index], client_config, self.context)
-        training_result: TrainingResult = client_trainer.train()
+        client_config = ClientConfig(
+            context=self.he_context,
+            epochs=self.config.local_epochs,
+            learning_rate=self.config.learning_rate,
+            aggregation_method=self.config.aggregation_method,
+            fed_prox_mu=self.config.fed_prox_mu if self.config.aggregation_method == AggregationMethod.FED_PROX else None
+        )
 
-        if self.context:
-            client_weights_list.append(training_result.encrypted_weights)
+        trainer = ClientTrainer(client_model, self.client_loaders[index], client_config)
+        result = trainer.train_step_sgd() if self.config.aggregation_method == AggregationMethod.FED_SGD else trainer.train()
+
+        self.client_train_accuracies.append(result.train_acc)
+        self.client_train_losses.append(result.train_loss)
+
+        print(f"Client {index + 1} | Train Acc: {result.train_acc:.2f}% | Train Loss: {result.train_loss:.4f}")
+        return result.encrypted_client_updates
+
+    def _aggregate(self, client_updates: List[Dict[str, ts.CKKSVector]]) -> None:
+        method = self.config.aggregation_method
+        if method in {AggregationMethod.FED_ADAM, AggregationMethod.FED_YOGI, AggregationMethod.FED_ADAGRAD}:
+            self._aggregate_adaptive_from_avg(client_updates, method)
+        elif method == AggregationMethod.FED_SGD:
+            self._aggregate_fed_sgd(client_updates)
         else:
-            client_weights_list.append(training_result.decrypted_weights)
+            self._aggregate_fed_avg(client_updates)
 
-        self.client_train_accuracies.append(training_result.train_acc)
-        self.client_train_losses.append(training_result.train_loss)
+    def _aggregate_adaptive_from_avg(self, encrypted_weights_list: List[Dict[str, ts.CKKSVector]], method: AggregationMethod) -> None:
+        aggregated_weights = self._decrypt_and_average(encrypted_weights_list)
+        self.initialize_adaptive_state_if_needed(self.global_model.state_dict())
+        self.adaptive_optimizer_state["step_count"] += 1
+        step = self.adaptive_optimizer_state["step_count"]
 
-        print(f"Client {index + 1} | Train Acc: {training_result.train_acc:.2f}% | Train Loss: {training_result.train_loss:.4f}")
+        global_weights = self.global_model.state_dict()
+        for name in global_weights:
+            delta = aggregated_weights[name] - global_weights[name]
 
-    def _calculate_global_model_fed_avg(self, client_weights_list: List[dict]) -> None:
-        if self.context:
-            aggregated_weights = {}
-            num_clients = len(client_weights_list)
+            self.update_adaptive_parameter(
+                name=name,
+                delta=delta,
+                method=method,
+                global_weights=global_weights,
+                step=step
+            )
 
-            for k in client_weights_list[0]:
-                encrypted_sum = client_weights_list[0][k]
-                for i in range(1, num_clients):
-                    encrypted_sum += client_weights_list[i][k]
-
-                encrypted_avg = encrypted_sum * (1 / num_clients)
-                aggregated_weights[k] = encrypted_avg
-
-            decrypted_weights = {}
-            for k in aggregated_weights:
-                decrypted_values = aggregated_weights[k].decrypt()
-                decrypted_tensor = torch.tensor(decrypted_values).reshape(self.global_model.state_dict()[k].shape)
-
-                scale_factor = max(decrypted_tensor.abs().max().item(), 1e-15)
-                decrypted_weights[k] = decrypted_tensor / scale_factor
-
-            self.global_model.load_state_dict(decrypted_weights, strict=False)
-
-        else:
-            self.global_model.load_state_dict(remove_module_prefix(client_weights_list[0]), strict=False)
-
+        self.global_model.load_state_dict(global_weights, strict=False)
         self.global_model.eval()
+
+    def _aggregate_fed_avg(self, encrypted_weights_list: List[Dict[str, ts.CKKSVector]]) -> None:
+        aggregated_weights = self._decrypt_and_average(encrypted_weights_list)
+        self.global_model.load_state_dict(aggregated_weights, strict=False)
+        self.global_model.eval()
+
+    def _aggregate_fed_sgd(self, encrypted_gradients_list: List[Dict[str, ts.CKKSVector]]) -> None:
+        averaged_gradients = self._decrypt_and_average(encrypted_gradients_list)
+        global_state = self.global_model.state_dict()
+        for key, grad_tensor in averaged_gradients.items():
+            global_state[key].sub_(self.config.learning_rate * grad_tensor)
+        self.global_model.eval()
+
+    def _decrypt_and_average(self, encrypted_list: List[Dict[str, ts.CKKSVector]]) -> Dict[str, torch.Tensor]:
+        num_clients = len(encrypted_list)
+        result = {}
+
+        for key in encrypted_list[0]:
+            agg = encrypted_list[0][key].copy()
+            for client_dict in encrypted_list[1:]:
+                agg += client_dict[key]
+            agg = agg * (1.0 / num_clients)
+            decrypted = agg.decrypt()
+            result[key] = torch.tensor(decrypted, dtype=torch.float32).view_as(self.global_model.state_dict()[key])
+
+        return result
+
+    def _evaluate_global_model(self) -> None:
+        acc, loss = compute_loss_and_accuracy(self.global_model, self.test_loader, nn.CrossEntropyLoss())
+        self.test_acc_history.append(acc)
+        self.test_loss_history.append(loss)
+        print(f"Global Model | Test Acc: {acc:.2f}% | Test Loss: {loss:.4f}")
