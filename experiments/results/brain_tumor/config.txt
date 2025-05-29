@@ -1,0 +1,14 @@
+Federated Experiment Configuration
+========================================
+Dataset        : brain
+Model          : BrainTumorCNN
+Num Clients    : 5
+Num Rounds     : 10
+Local Epochs   : 1
+Learning Rate  : 0.01
+Num Runs       : 1
+Base Seed      : 42
+Subset Ratio   : 1.0
+Train Size     : 5618
+Test Size      : 1405
+Timestamp      : 20250522_161822

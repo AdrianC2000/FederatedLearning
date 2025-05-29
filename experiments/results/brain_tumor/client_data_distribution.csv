@@ -1,0 +1,6 @@
+run,seed,strategy,client_id,total,class_0,class_1,class_2,class_3
+0,42,stratified_equal,0,1124,259,320,264,281
+0,42,stratified_equal,1,1124,260,320,263,281
+0,42,stratified_equal,2,1124,260,320,263,281
+0,42,stratified_equal,3,1123,259,320,263,281
+0,42,stratified_equal,4,1123,259,320,263,281

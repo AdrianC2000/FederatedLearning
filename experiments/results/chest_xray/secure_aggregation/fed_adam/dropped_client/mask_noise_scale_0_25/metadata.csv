@@ -1,0 +1,2 @@
+mask_noise_scale,drop_clients
+0.25,True
