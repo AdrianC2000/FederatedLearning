@@ -10,14 +10,8 @@ from common.enum.aggregation_method import AggregationMethod
 
 
 class ClientConfig:
-    def __init__(
-            self,
-            learning_rate: float = LEARNING_RATE,
-            momentum: float = MOMENTUM,
-            epochs: int = LOCAL_EPOCHS,
-            aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
-            fed_prox_mu: Optional[float] = None,
-    ):
+    def __init__(self, learning_rate: float = LEARNING_RATE, momentum: float = MOMENTUM, epochs: int = LOCAL_EPOCHS,
+                 aggregation_method: AggregationMethod = AggregationMethod.FED_AVG, fed_prox_mu: Optional[float] = None):
         self.learning_rate = learning_rate
         self.momentum = momentum
         self.epochs = epochs
@@ -26,10 +20,11 @@ class ClientConfig:
 
 
 class TrainingResult:
-    def __init__(self, client_update: dict, train_loss: float, train_acc: float):
+    def __init__(self, client_update: dict, train_loss: float, train_acc: float, num_samples: Optional[int] = None):
         self.client_update = client_update  # weights or gradients
         self.train_loss = train_loss
         self.train_acc = train_acc
+        self.num_samples = num_samples
 
 
 class ClientTrainer(BaseTrainer):
@@ -47,14 +42,6 @@ class ClientTrainer(BaseTrainer):
             {name: param.detach().clone() for name, param in self.model.named_parameters()}
             if self.config.aggregation_method == AggregationMethod.FED_PROX else None
         )
-
-    def _compute_prox_term(self) -> float:
-        prox_term = 0.0
-        for name, param in self.model.named_parameters():
-            if name in self.global_weights:
-                global_param = self.global_weights[name]
-                prox_term += ((param - global_param) ** 2).sum()
-        return prox_term
 
     def train(self) -> TrainingResult:
         self.model.train()
@@ -76,6 +63,14 @@ class ClientTrainer(BaseTrainer):
 
         return TrainingResult(weights_after, train_loss, train_acc)
 
+    def _compute_prox_term(self) -> float:
+        prox_term = 0.0
+        for name, param in self.model.named_parameters():
+            if name in self.global_weights:
+                global_param = self.global_weights[name]
+                prox_term += ((param - global_param) ** 2).sum()
+        return prox_term
+
     def train_step_sgd(self) -> TrainingResult:
         self.model.train()
 
@@ -85,6 +80,8 @@ class ClientTrainer(BaseTrainer):
         }
 
         x, y = next(iter(self.train_loader))
+        num_samples = x.size(0)
+
         self.optimizer.zero_grad()
         output = self.model(x)
         loss = self.criterion(output, y)
@@ -99,4 +96,4 @@ class ClientTrainer(BaseTrainer):
             for name in weights_before
         }
 
-        return TrainingResult(gradients, train_loss, train_acc)
+        return TrainingResult(gradients, train_loss, train_acc, num_samples)

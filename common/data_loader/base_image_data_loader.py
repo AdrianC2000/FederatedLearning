@@ -18,10 +18,12 @@ class BaseImageDataLoader(ABC):
         self.data_root = self.project_root / "data" / self.DATA_FOLDER
 
     @abstractmethod
-    def download_if_needed(self): pass
+    def download_if_needed(self):
+        pass
 
     @abstractmethod
-    def _load_dataset(self, transform) -> Dataset: pass
+    def _load_dataset(self, transform) -> Dataset:
+        pass
 
     def preprocess(self):
         tfms = [transforms.Resize((self.IMAGE_SIZE, self.IMAGE_SIZE))]

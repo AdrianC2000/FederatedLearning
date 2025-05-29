@@ -7,6 +7,7 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader
 
+from common.fml_utils import DataSplitStrategy
 from trainers.federated_he.client_trainer import HEConfig
 from trainers.federated_he.federated_trainer import FederatedTrainer, FederatedConfig
 from common.result_utils.fl_result_utils import FLResultUtils
@@ -28,6 +29,7 @@ def run_he_experiments(
         local_epochs: int,
         learning_rate: float,
         baseline_results: dict[str, ModelWrapper],
+        data_split_strategy: DataSplitStrategy,
         fed_prox_mu: Optional[float] = None,
         seed: int = 42
 ):
@@ -36,26 +38,16 @@ def run_he_experiments(
     aggregation = aggregation_method.value.lower()
     powers = [45]
 
+    relevant_baselines = {
+        label: model for label, model in baseline_results.items()
+        if label == "centralized" or label == aggregation
+    }
+
     if aggregation_method == AggregationMethod.FED_PROX and fed_prox_mu is not None:
         mu_key = f"mu_{str(fed_prox_mu).replace('.', '_')}"
         relevant_baselines = {
             label: model for label, model in baseline_results.items()
             if label == "centralized" or label == mu_key
-        }
-    elif aggregation_method == AggregationMethod.FED_AVG:
-        relevant_baselines = {
-            label: model for label, model in baseline_results.items()
-            if label in {"centralized", "fed_avg"}
-        }
-    elif aggregation_method == AggregationMethod.FED_SGD:
-        relevant_baselines = {
-            label: model for label, model in baseline_results.items()
-            if label in {"centralized", "fed_sgd"}
-        }
-    else:
-        relevant_baselines = {
-            label: model for label, model in baseline_results.items()
-            if label == "centralized"
         }
 
     result_models = relevant_baselines.copy()
@@ -98,7 +90,7 @@ def run_he_experiments(
                     learning_rate=learning_rate,
                     aggregation_method=aggregation_method,
                     fed_prox_mu=fed_prox_mu,
-                    seed=run_seed
+                    data_split_strategy=data_split_strategy
                 ),
             )
             model = trainer.train()

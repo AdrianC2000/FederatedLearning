@@ -7,6 +7,7 @@ from typing import Optional
 
 from torch.utils.data import DataLoader
 
+from common.fml_utils import DataSplitStrategy
 from trainers.federated_sa.client_trainer import SAConfig
 from trainers.federated_sa.federated_trainer import FederatedTrainer, FederatedConfig
 from common.result_utils.fl_result_utils import FLResultUtils
@@ -28,6 +29,7 @@ def run_sa_experiments(
         local_epochs: int,
         learning_rate: float,
         baseline_results: dict[str, ModelWrapper],
+        data_split_strategy: DataSplitStrategy,
         fed_prox_mu: Optional[float] = None,
         seed: int = 42
 ):
@@ -36,29 +38,20 @@ def run_sa_experiments(
     aggregation = aggregation_method.value.lower()
     noise_scales = [0.1, 0.25, 0.5]
 
-    for drop_clients in [False, True]:
-        client_group = "dropped_client" if drop_clients else "all_clients"
+    drop_clients_values = [False, True] if data_split_strategy == DataSplitStrategy.STRATIFIED_EQUAL else [False]
 
-        if aggregation_method == AggregationMethod.FED_AVG:
-            result_models = {
-                label: model for label, model in baseline_results.items()
-                if label in {"centralized", "fed_avg"}
-            }
-        elif aggregation_method == AggregationMethod.FED_SGD:
-            result_models = {
-                label: model for label, model in baseline_results.items()
-                if label in {"centralized", "fed_sgd"}
-            }
-        elif aggregation_method == AggregationMethod.FED_PROX and fed_prox_mu is not None:
+    for drop_clients in drop_clients_values:
+        client_group = "dropped_client" if drop_clients else "all_clients"
+        if aggregation_method == AggregationMethod.FED_PROX and fed_prox_mu is not None:
             mu_key = f"mu_{str(fed_prox_mu).replace('.', '_')}"
             result_models = {
                 label: model for label, model in baseline_results.items()
-                if label in {"centralized", mu_key}
+                if label == "centralized" or label == mu_key
             }
         else:
             result_models = {
                 label: model for label, model in baseline_results.items()
-                if label == "centralized"
+                if label == "centralized" or label == aggregation
             }
 
         result_models_by_mu = {
@@ -98,7 +91,7 @@ def run_sa_experiments(
                         learning_rate=learning_rate,
                         aggregation_method=aggregation_method,
                         fed_prox_mu=fed_prox_mu,
-                        seed=run_seed
+                        data_split_strategy=data_split_strategy
                     ),
                 )
 

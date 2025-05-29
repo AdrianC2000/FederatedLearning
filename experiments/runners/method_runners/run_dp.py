@@ -1,6 +1,5 @@
 import os
 import random
-
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -8,6 +7,7 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader
 
+from common.fml_utils import DataSplitStrategy
 from trainers.federated_dp.client_trainer import DPConfig
 from trainers.federated_dp.federated_trainer import FederatedTrainer, FederatedConfig
 from common.result_utils.fl_result_utils import FLResultUtils
@@ -29,14 +29,22 @@ def run_dp_experiments(
         local_epochs: int,
         learning_rate: float,
         baseline_results: dict[str, ModelWrapper],
+        data_split_strategy: DataSplitStrategy,
         fed_prox_mu: Optional[float] = None,
-        seed: int = 42
+        seed: int = 42,
 ):
     method = "differential_privacy"
     privacy_method = "Differential Privacy"
     aggregation = aggregation_method.value.lower()
-    epsilons = [0.1, 1.0, 3.0]
-    deltas = [1e-4, 0.1]
+    # epsilons = [0.1, 1.0, 3.0]
+    # deltas = [1e-4, 0.1]
+    epsilons = [1.0]
+    deltas = [1e-4]
+
+    relevant_baselines = {
+        label: model for label, model in baseline_results.items()
+        if label == "centralized" or label == aggregation
+    }
 
     if aggregation_method == AggregationMethod.FED_PROX and fed_prox_mu is not None:
         mu_key = f"mu_{str(fed_prox_mu).replace('.', '_')}"
@@ -44,28 +52,8 @@ def run_dp_experiments(
             label: model for label, model in baseline_results.items()
             if label == "centralized" or label == mu_key
         }
-    elif aggregation_method == AggregationMethod.FED_AVG:
-        relevant_baselines = {
-            label: model for label, model in baseline_results.items()
-            if label in {"centralized", "fed_avg"}
-        }
-    elif aggregation_method == AggregationMethod.FED_SGD:
-        relevant_baselines = {
-            label: model for label, model in baseline_results.items()
-            if label in {"centralized", "fed_sgd"}
-        }
-    else:
-        relevant_baselines = {
-            label: model for label, model in baseline_results.items()
-            if label == "centralized"
-        }
 
     result_models = relevant_baselines.copy()
-    result_models_by_mu = {
-        "mu_0_001": relevant_baselines.copy(),
-        "mu_0_01": relevant_baselines.copy(),
-        "mu_0_1": relevant_baselines.copy(),
-    } if aggregation_method == AggregationMethod.FED_PROX else {}
 
     summary_rows_by_config = {}
 
@@ -78,6 +66,9 @@ def run_dp_experiments(
         delta_str = f"{delta:.1e}".replace("e+0", "e").replace("e+", "e").replace(".0", "")
         config_label = f"e{eps_str}_d{delta_str}"
         print(f"[{i}/{len(configs)}] Running DP config: {config_label}")
+
+        mu_key = f"mu_{str(fed_prox_mu).replace('.', '_')}" if fed_prox_mu is not None else None
+        key = f"{mu_key}__{config_label}" if mu_key else config_label
 
         test_acc_runs, test_loss_runs = [], []
         exec_times = []
@@ -101,7 +92,7 @@ def run_dp_experiments(
                     learning_rate=learning_rate,
                     aggregation_method=aggregation_method,
                     fed_prox_mu=fed_prox_mu,
-                    seed=run_seed
+                    data_split_strategy=data_split_strategy
                 ),
             )
             model = trainer.train()
@@ -118,20 +109,15 @@ def run_dp_experiments(
             exec_time=sum(exec_times) / num_runs,
         )
 
-        result_models[config_label] = avg_model
+        result_models[key] = avg_model
 
-        if aggregation_method == AggregationMethod.FED_PROX and fed_prox_mu is not None:
-            mu_key = f"mu_{str(fed_prox_mu).replace('.', '_')}"
-            if mu_key in result_models_by_mu:
-                result_models_by_mu[mu_key][f"{mu_key}__{config_label}"] = avg_model
-
-        FLResultUtils.save(avg_model, dataset, method, aggregation, config_label, fed_prox_mu)
+        FLResultUtils.save(avg_model, dataset, method, aggregation, key, fed_prox_mu)
         FLResultUtils.save_metadata(
             config={"epsilon": eps, "delta": delta, **({"fed_prox_mu": fed_prox_mu} if fed_prox_mu else {})},
             dataset=dataset,
             method=method,
             aggregation=aggregation,
-            config_name=config_label,
+            config_name=key,
             mu=fed_prox_mu,
         )
 
@@ -146,7 +132,7 @@ def run_dp_experiments(
                 "exec_time": avg_model.exec_time,
             })
 
-        summary_rows_by_config[config_label] = summary_rows
+        summary_rows_by_config[key] = summary_rows
 
     plot_dir = os.path.join("results", dataset, method, aggregation,
                             f"mu_{str(fed_prox_mu).replace('.', '_')}" if fed_prox_mu else "", "plots")

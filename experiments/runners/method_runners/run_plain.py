@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torch
 
+from common.fml_utils import DataSplitStrategy
 from common.result_utils.fl_result_utils import FLResultUtils
 from trainers.federated_plain.federated_trainer import FederatedTrainer, FederatedConfig
 from trainers.federated_plain.client_trainer import AggregationMethod
@@ -19,7 +20,8 @@ def run_plain_experiments(
         local_epochs: int,
         num_runs: int,
         learning_rate: float,
-        base_seed: int
+        base_seed: int,
+        data_split_strategy: DataSplitStrategy
 ) -> dict[str, ModelWrapper]:
     print(f"\n[Plain] Running {num_runs} run(s) for each aggregation method")
     global_start = time.time()
@@ -56,7 +58,8 @@ def run_plain_experiments(
                     num_rounds=num_rounds,
                     local_epochs=local_epochs,
                     aggregation_method=method,
-                    learning_rate=learning_rate
+                    learning_rate=learning_rate,
+                    data_split_strategy=data_split_strategy
                 )
             )
             model = trainer.train()
@@ -105,7 +108,8 @@ def run_plain_experiments(
                     local_epochs=local_epochs,
                     learning_rate=learning_rate,
                     aggregation_method=AggregationMethod.FED_PROX,
-                    fed_prox_mu=mu
+                    fed_prox_mu=mu,
+                    data_split_strategy=data_split_strategy
                 )
             )
             model = trainer.train()

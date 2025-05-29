@@ -17,15 +17,9 @@ class SAConfig:
 
 
 class ClientConfig:
-    def __init__(
-            self,
-            sa_config: SAConfig,
-            learning_rate: float = LEARNING_RATE,
-            momentum: float = MOMENTUM,
-            epochs: int = LOCAL_EPOCHS,
-            aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
-            fed_prox_mu: Optional[float] = None,
-    ):
+    def __init__(self, sa_config: SAConfig, learning_rate: float = LEARNING_RATE, momentum: float = MOMENTUM,
+                 epochs: int = LOCAL_EPOCHS, aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
+                 fed_prox_mu: Optional[float] = None):
         self.sa_config = sa_config
         self.learning_rate = learning_rate
         self.momentum = momentum
@@ -35,7 +29,8 @@ class ClientConfig:
 
 
 class ClientTrainer(BaseTrainer):
-    def __init__(self, model: nn.Module, train_loader: DataLoader, config: ClientConfig, num_clients: int, client_index: int):
+    def __init__(self, model: nn.Module, train_loader: DataLoader, config: ClientConfig,
+                 num_clients: int, client_index: int):
         self.model = model
         self.train_loader = train_loader
         self.config = config
@@ -49,6 +44,7 @@ class ClientTrainer(BaseTrainer):
         self.received_masks: Dict[int, Dict[str, torch.Tensor]] = {}
         self.train_loss: float = 0.0
         self.train_acc: float = 0.0
+        self.num_samples: int = 0
 
         self.weights_before: Optional[Dict[str, torch.Tensor]] = None
         self.update: Optional[Dict[str, torch.Tensor]] = None
@@ -56,52 +52,19 @@ class ClientTrainer(BaseTrainer):
 
     def train(self):
         self.model.train()
-        self.weights_before = {
-            name: param.detach().clone()
-            for name, param in self.model.named_parameters()
-        }
-
+        self.weights_before = {name: param.detach().clone() for name, param in self.model.named_parameters()}
         for _ in range(self.config.epochs):
             for x, y in self.train_loader:
                 self.optimizer.zero_grad()
                 output = self.model(x)
                 loss = self.criterion(output, y)
-
                 if self.config.aggregation_method == AggregationMethod.FED_PROX:
                     loss += (self.config.fed_prox_mu / 2) * self._compute_prox_term()
-
                 loss.backward()
                 self.optimizer.step()
-
         self.train_acc, self.train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
         weights_after = remove_module_prefix(self.model.state_dict())
         self.update = weights_after
-
-    def train_step_sgd(self):
-        self.model.train()
-        self.weights_before = {
-            name: param.detach().clone()
-            for name, param in self.model.named_parameters()
-        }
-
-        x, y = next(iter(self.train_loader))
-        self.optimizer.zero_grad()
-        output = self.model(x)
-        loss = self.criterion(output, y)
-        loss.backward()
-        self.optimizer.step()
-
-        self.train_acc, self.train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
-
-        weights_after = {
-            name: param.detach().clone()
-            for name, param in self.model.named_parameters()
-        }
-
-        self.update = {
-            name: (self.weights_before[name] - weights_after[name]) / self.config.learning_rate
-            for name in weights_after
-        }
 
     def _compute_prox_term(self) -> float:
         prox_term = 0.0
@@ -110,15 +73,34 @@ class ClientTrainer(BaseTrainer):
                 prox_term += ((param - self.weights_before[name]) ** 2).sum()
         return prox_term
 
+    def train_step_sgd(self):
+        self.model.train()
+        self.weights_before = {name: param.detach().clone() for name, param in self.model.named_parameters()}
+        x, y = next(iter(self.train_loader))
+        self.num_samples = x.size(0)
+        self.optimizer.zero_grad()
+        output = self.model(x)
+        loss = self.criterion(output, y)
+        loss.backward()
+        self.optimizer.step()
+
+        self.train_acc, self.train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
+        weights_after = {name: param.detach().clone() for name, param in self.model.named_parameters()}
+        self.update = {
+            name: (self.weights_before[name] - weights_after[name]) / self.config.learning_rate
+            for name in weights_after
+        }
+
     def generate_masks(self):
         weights = self.model.state_dict()
         for j in range(self.num_clients):
             if j == self.client_index:
-                continue
-            self.masks[j] = {
-                k: torch.randn_like(v) * self.config.sa_config.mask_noise_scale
-                for k, v in weights.items()
-            }
+                self.masks[j] = {k: torch.zeros_like(v) for k, v in weights.items()}
+            else:
+                self.masks[j] = {
+                    k: torch.randn_like(v) * self.config.sa_config.mask_noise_scale
+                    for k, v in weights.items()
+                }
 
     def receive_masks(self, sender_index: int, mask: Dict[str, torch.Tensor]):
         self.received_masks[sender_index] = mask

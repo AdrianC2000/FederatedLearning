@@ -5,6 +5,7 @@ from datetime import datetime
 from torch.utils.data import DataLoader
 
 from common.enum.aggregation_method import AggregationMethod
+from common.fml_utils import DataSplitStrategy
 from common.model.model_wrapper import ModelWrapper
 from common.result_utils.fl_result_utils import FLResultUtils
 from experiments.runners.method_runners.run_centralised import run_centralized_experiment
@@ -15,6 +16,7 @@ from experiments.runners.method_runners.run_he import run_he_experiments
 from experiments.runners.method_runners.run_sa import run_sa_experiments
 from experiments.runners.method_runners.run_smpc import run_smpc_experiments
 
+ALL_RUNNERS = [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]
 
 def print_time(label: str, start: float, global_start: float):
     local_elapsed = time.time() - start
@@ -28,34 +30,37 @@ def print_time(label: str, start: float, global_start: float):
     print(f"{label} finished in {format_sec(local_elapsed)} (total time: {format_sec(global_elapsed)})")
 
 
-def run_fedavg_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float):
+def run_fedavg_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float,
+                           runners: list):
     print("\n[Running FedAvg experiments]")
     fedavg_start = time.time()
-    for runner in [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]:
+    for runner in runners:
         method_start = time.time()
         runner(aggregation_method=AggregationMethod.FED_AVG, baseline_results=baseline_results, **shared_args)
         print_time(f"{runner.__name__} [FedAvg]", method_start, global_start)
     print_time("All FedAvg experiments", fedavg_start, global_start)
 
 
-def run_fedsgd_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float):
+def run_fedsgd_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float,
+                           runners: list):
     print("\n[Running FedSGD experiments]")
     fedsgd_start = time.time()
-    for runner in [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]:
+    for runner in runners:
         method_start = time.time()
         runner(aggregation_method=AggregationMethod.FED_SGD, baseline_results=baseline_results, **shared_args)
         print_time(f"{runner.__name__} [FedSGD]", method_start, global_start)
     print_time("All FedSGD experiments", fedsgd_start, global_start)
 
 
-def run_fedprox_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float):
+def run_fedprox_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float,
+                            runners: list):
     print("\n[Running FedProx experiments]")
     fedprox_start = time.time()
-    for mu in [0.001, 0.01, 0.1]:
+    for mu in [1, 5, 10]:
         print(f"→ FedProx | mu = {mu}")
         prox_start = time.time()
         prox_args = {**shared_args, "fed_prox_mu": mu}
-        for runner in [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]:
+        for runner in runners:
             method_start = time.time()
             runner(aggregation_method=AggregationMethod.FED_PROX, baseline_results=baseline_results, **prox_args)
             print_time(f"{runner.__name__} [FedProx, μ={mu}]", method_start, global_start)
@@ -63,30 +68,33 @@ def run_fedprox_experiments(shared_args: dict, baseline_results: dict[str, Model
     print_time("All FedProx experiments", fedprox_start, global_start)
 
 
-def run_fedadam_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float):
+def run_fedadam_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float,
+                            runners: list):
     print("\n[Running FedAdam experiments]")
     fedadam_start = time.time()
-    for runner in [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]:
+    for runner in runners:
         method_start = time.time()
         runner(aggregation_method=AggregationMethod.FED_ADAM, baseline_results=baseline_results, **shared_args)
         print_time(f"{runner.__name__} [FedAdam]", method_start, global_start)
     print_time("All FedAdam experiments", fedadam_start, global_start)
 
 
-def run_fedadagrad_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float):
+def run_fedadagrad_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float,
+                               runners: list):
     print("\n[Running FedAdagrad experiments]")
     fedadagrad_start = time.time()
-    for runner in [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]:
+    for runner in runners:
         method_start = time.time()
         runner(aggregation_method=AggregationMethod.FED_ADAGRAD, baseline_results=baseline_results, **shared_args)
         print_time(f"{runner.__name__} [FedAdagrad]", method_start, global_start)
     print_time("All FedAdagrad experiments", fedadagrad_start, global_start)
 
 
-def run_fedyogi_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float):
+def run_fedyogi_experiments(shared_args: dict, baseline_results: dict[str, ModelWrapper], global_start: float,
+                            runners: list):
     print("\n[Running FedYogi experiments]")
     fedyogi_start = time.time()
-    for runner in [run_dp_experiments, run_he_experiments, run_sa_experiments, run_smpc_experiments]:
+    for runner in runners:
         method_start = time.time()
         runner(aggregation_method=AggregationMethod.FED_YOGI, baseline_results=baseline_results, **shared_args)
         print_time(f"{runner.__name__} [FedYogi]", method_start, global_start)
@@ -104,7 +112,8 @@ def run_all_experiments(
         local_epochs: int,
         learning_rate: float,
         base_seed: int,
-        subset_ratio: float
+        subset_ratio: float,
+        data_split_strategy: DataSplitStrategy
 ):
     global_start = time.time()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -124,6 +133,7 @@ def run_all_experiments(
         train_loader=train_loader,
         test_loader=test_loader,
         model_fn=model_fn,
+        data_split_strategy=data_split_strategy
     )
 
     centralized = run_centralized_experiment(
@@ -147,7 +157,8 @@ def run_all_experiments(
         local_epochs=local_epochs,
         num_runs=num_runs,
         learning_rate=learning_rate,
-        base_seed=base_seed
+        base_seed=base_seed,
+        data_split_strategy=data_split_strategy
     )
     baseline_results = {"centralized": centralized, **plain}
 
@@ -160,15 +171,17 @@ def run_all_experiments(
         num_clients=num_clients,
         num_rounds=num_rounds,
         local_epochs=local_epochs,
-        learning_rate=learning_rate
+        learning_rate=learning_rate,
+        seed=base_seed,
+        data_split_strategy=data_split_strategy
     )
 
-    run_fedavg_experiments(shared_args, baseline_results, global_start)
-    run_fedsgd_experiments(shared_args, baseline_results, global_start)
-    run_fedprox_experiments(shared_args, baseline_results, global_start)
-    run_fedadam_experiments(shared_args, baseline_results, global_start)
-    run_fedadagrad_experiments(shared_args, baseline_results, global_start)
-    run_fedyogi_experiments(shared_args, baseline_results, global_start)
+    run_fedavg_experiments(shared_args, baseline_results, global_start, ALL_RUNNERS)
+    run_fedsgd_experiments(shared_args, baseline_results, global_start, ALL_RUNNERS)
+    run_fedprox_experiments(shared_args, baseline_results, global_start, ALL_RUNNERS)
+    run_fedadam_experiments(shared_args, baseline_results, global_start, ALL_RUNNERS)
+    run_fedadagrad_experiments(shared_args, baseline_results, global_start, ALL_RUNNERS)
+    run_fedyogi_experiments(shared_args, baseline_results, global_start, ALL_RUNNERS)
 
     total_time = time.time() - global_start
     hrs, rem = divmod(total_time, 3600)

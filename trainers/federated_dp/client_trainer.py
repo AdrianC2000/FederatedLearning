@@ -19,15 +19,9 @@ class DPConfig:
 
 
 class ClientConfig:
-    def __init__(
-            self,
-            dp_config: DPConfig,
-            learning_rate: float = LEARNING_RATE,
-            momentum: float = MOMENTUM,
-            epochs: int = LOCAL_EPOCHS,
-            aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
-            fed_prox_mu: Optional[float] = None,
-    ):
+    def __init__(self, dp_config: DPConfig, learning_rate: float = LEARNING_RATE, momentum: float = MOMENTUM,
+                 epochs: int = LOCAL_EPOCHS, aggregation_method: AggregationMethod = AggregationMethod.FED_AVG,
+                 fed_prox_mu: Optional[float] = None):
         self.learning_rate = learning_rate
         self.momentum = momentum
         self.epochs = epochs
@@ -37,10 +31,11 @@ class ClientConfig:
 
 
 class TrainingResult:
-    def __init__(self, client_update: dict, train_loss: float, train_acc: float):
+    def __init__(self, client_update: dict, train_loss: float, train_acc: float, num_samples: Optional[int] = None):
         self.client_update = client_update
         self.train_loss = train_loss
         self.train_acc = train_acc
+        self.num_samples = num_samples
 
 
 class ClientTrainer(BaseTrainer):
@@ -49,17 +44,11 @@ class ClientTrainer(BaseTrainer):
         self.train_loader = train_loader
         self.config = config
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.SGD(
-            self.model.parameters(),
-            lr=self.config.learning_rate,
-            momentum=self.config.momentum,
-        )
-
+        self.optimizer = optim.SGD(self.model.parameters(), lr=config.learning_rate, momentum=config.momentum)
         self._enable_privacy()
-
         self.global_weights = (
             {name: param.detach().clone() for name, param in self.model.named_parameters()}
-            if self.config.fed_prox_mu is not None else None
+            if config.aggregation_method == AggregationMethod.FED_PROX else None
         )
 
     def _enable_privacy(self) -> None:
@@ -75,6 +64,22 @@ class ClientTrainer(BaseTrainer):
             epochs=self.config.epochs,
         )
 
+    def train(self) -> TrainingResult:
+        self.model.train()
+        for _ in range(self.config.epochs):
+            for x, y in self.train_loader:
+                self.optimizer.zero_grad()
+                output = self.model(x)
+                loss = self.criterion(output, y)
+                if self.config.fed_prox_mu is not None:
+                    loss += (self.config.fed_prox_mu / 2) * self._compute_prox_term()
+                loss.backward()
+                self.optimizer.step()
+
+        train_acc, train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
+        weights_after = remove_module_prefix(self.model.state_dict())
+        return TrainingResult(weights_after, train_loss, train_acc)
+
     def _compute_prox_term(self) -> float:
         prox_term = 0.0
         for name, param in self.model.named_parameters():
@@ -83,35 +88,11 @@ class ClientTrainer(BaseTrainer):
                 prox_term += ((param - global_param) ** 2).sum()
         return prox_term
 
-    def train(self) -> TrainingResult:
-        self.model.train()
-
-        for _ in range(self.config.epochs):
-            for x, y in self.train_loader:
-                self.optimizer.zero_grad()
-                output = self.model(x)
-                loss = self.criterion(output, y)
-
-                if self.config.fed_prox_mu is not None:
-                    loss += (self.config.fed_prox_mu / 2) * self._compute_prox_term()
-
-                loss.backward()
-                self.optimizer.step()
-
-        train_acc, train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
-        weights_after = remove_module_prefix(self.model.state_dict())
-
-        return TrainingResult(weights_after, train_loss, train_acc)
-
     def train_step_sgd(self) -> TrainingResult:
         self.model.train()
-
-        weights_before = remove_module_prefix({
-            name: param.detach().clone()
-            for name, param in self.model.named_parameters()
-        })
-
+        weights_before = remove_module_prefix({name: param.detach().clone() for name, param in self.model.named_parameters()})
         x, y = next(iter(self.train_loader))
+        num_samples = x.size(0)
         self.optimizer.zero_grad()
         output = self.model(x)
         loss = self.criterion(output, y)
@@ -121,9 +102,5 @@ class ClientTrainer(BaseTrainer):
         train_acc, train_loss = compute_loss_and_accuracy(self.model, self.train_loader, self.criterion)
         weights_after = remove_module_prefix(self.model.state_dict())
 
-        gradients = {
-            name: (weights_before[name] - weights_after[name]) / self.config.learning_rate
-            for name in weights_before
-        }
-
-        return TrainingResult(gradients, train_loss, train_acc)
+        gradients = {name: (weights_before[name] - weights_after[name]) / self.config.learning_rate for name in weights_before}
+        return TrainingResult(gradients, train_loss, train_acc, num_samples)

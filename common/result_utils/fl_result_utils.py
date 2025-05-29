@@ -1,9 +1,11 @@
 import os
+
+import numpy as np
 import torch
 import pandas as pd
 from torch.utils.data import DataLoader
 
-from common.fml_utils import split_dataset_stratified
+from common.fml_utils import split_dataset, DataSplitStrategy
 from common.model.model_wrapper import ModelWrapper
 from pathlib import Path
 import inspect
@@ -121,6 +123,7 @@ class FLResultUtils:
             train_loader: DataLoader,
             test_loader: DataLoader,
             model_fn: callable,
+            data_split_strategy: DataSplitStrategy
     ):
         os.makedirs(output_dir, exist_ok=True)
         config_path = os.path.join(output_dir, "config.txt")
@@ -150,7 +153,8 @@ class FLResultUtils:
             num_runs=num_runs,
             base_seed=base_seed,
             output_path=os.path.join(output_dir, "client_data_distribution.csv"),
-            class_names=class_names
+            class_names=class_names,
+            data_split_strategy=data_split_strategy
         )
 
     @staticmethod
@@ -160,18 +164,23 @@ class FLResultUtils:
             num_runs: int,
             base_seed: int,
             output_path: str,
-            class_names: list[str]
+            class_names: list[str],
+            data_split_strategy: DataSplitStrategy
     ):
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["run", "client_id", "total"] + class_names)
+            writer.writerow(["run", "seed", "strategy", "client_id", "total"] + class_names)
 
             for run_idx in range(num_runs):
                 seed = base_seed + run_idx
-                client_datasets = split_dataset_stratified(dataset, num_clients, seed)
+                np.random.seed(seed)
+
+                client_datasets = split_dataset(dataset, num_clients, data_split_strategy)
 
                 for i, subset in enumerate(client_datasets):
                     labels = [int(label) for _, label in subset]
                     label_counts = Counter(labels)
-                    row = [run_idx, i, len(subset)] + [label_counts.get(j, 0) for j in range(len(class_names))]
+                    row = [run_idx, seed, data_split_strategy.value, i, len(subset)] + [
+                        label_counts.get(j, 0) for j in range(len(class_names))
+                    ]
                     writer.writerow(row)

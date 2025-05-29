@@ -36,6 +36,16 @@ class VisualisationUtils:
         plt.title(title or f"Test {metric_type.value.capitalize()}")
         plt.legend()
         plt.grid(True)
+
+        total_rounds = max(len(model.test_acc if metric_type == MetricType.ACCURACY else model.test_loss)
+                           for model in models)
+        if total_rounds <= 10:
+            plt.xticks(range(1, total_rounds + 1))
+        elif total_rounds <= 50:
+            plt.xticks(range(1, total_rounds + 1, 5))
+        else:
+            plt.xticks(range(1, total_rounds + 1, 10))
+
         plt.show()
 
     @staticmethod
@@ -57,7 +67,13 @@ class VisualisationUtils:
 
         for bar, time in zip(bars, times):
             height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width() / 2, height + 0.3, f"{time:.2f}s",
+            if time >= 60:
+                minutes = int(time // 60)
+                seconds = int(time % 60)
+                label = f"{minutes}min{seconds:02d}sek"
+            else:
+                label = f"{time:.2f}s"
+            plt.text(bar.get_x() + bar.get_width() / 2, height + 0.3, label,
                      ha='center', va='bottom', fontsize=9)
 
         plt.tight_layout()
@@ -87,8 +103,15 @@ class VisualisationUtils:
         plt.ylabel(ylabel)
         plt.title(title)
         plt.legend(loc="upper right")
-        plt.xticks(range(1, max_len + 1))
-        plt.legend()
+
+        # Tick frequency logic
+        if max_len <= 10:
+            plt.xticks(range(1, max_len + 1))
+        elif max_len <= 50:
+            plt.xticks(range(1, max_len + 1, 5))
+        else:
+            plt.xticks(range(1, max_len + 1, 10))
+
         plt.grid(True)
         plt.tight_layout()
         plt.savefig(out_path)
@@ -141,7 +164,7 @@ class VisualisationUtils:
                 eps = float(eps_part.replace("_", "."))
                 delta = float(delta_part.replace("_", "."))
 
-                delta_str = f"{delta:.1e}".replace("e+0", "e").replace("e+","e").replace(".0", "")
+                delta_str = f"{delta:.1e}".replace("e+0", "e").replace("e+", "e").replace(".0", "")
 
                 return f"ε = {eps}, δ = {delta_str}"
             except Exception:
