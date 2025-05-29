@@ -33,7 +33,43 @@ This repository implements a comprehensive framework for conducting federated le
    
 ## Sample project results
 You can see the sample results under `experiments/results` - these are the results for the `STRATIFIED_EQUAL` dataset split strategy.
-Some of the generated plots are presented below:
+Some of the additionally generated plots are presented below:
+
+### Federated Averaging & FedSGD with Secure Aggregation
+
+<p align="center">
+  <img src="images/sa_fedavg_fedsgd/accuracy.png" width="500"/>
+  <br/>
+  <img src="images/sa_fedavg_fedsgd/loss.png" width="500"/>
+  <br/>
+  <img src="images/sa_fedavg_fedsgd/exec_time.png" width="500"/>
+</p>
+
+---
+
+### Federated Proximal with Homomorphic Encryption
+
+Different values of μ (e.g., 0.001, 0.01, 0.1)
+
+<p align="center">
+  <img src="images/he_fedprox/accuracy.png" width="500"/>
+  <br/>
+  <img src="images/he_fedprox/loss.png" width="500"/>
+  <br/>
+  <img src="images/he_fedprox/exec_time.png" width="500"/>
+</p>
+
+---
+
+### FedOpt (FedAdagrad, FedAdam, FedYogi) with Differential Privacy
+
+<p align="center">
+  <img src="images/dp_fedopt/accuracy.png" width="500"/>
+  <br/>
+  <img src="images/dp_fedopt/loss.png" width="500"/>
+  <br/>
+  <img src="images/dp_fedopt/exec_time.png" width="500"/>
+</p>
 
 ## Directory Structure
 
