@@ -8,11 +8,11 @@ from experiments.runners.federated_runner import run_all_experiments
 def run_experiments_for_brain_tumor_dataset(data_split_strategy: DataSplitStrategy = DataSplitStrategy.STRATIFIED_EQUAL):
     dataset = Dataset.BRAIN_TUMOR
     model_fn = BrainTumorCNN
-    num_runs = 1
-    subset_ratio = 0.1
+    num_runs = 5
+    subset_ratio = 1
     seed = 42
-    num_clients = 2
-    num_rounds = 2
+    num_clients = 10
+    num_rounds = 5
     local_epochs = 1
     learning_rate = 0.01
     batch_size = 64

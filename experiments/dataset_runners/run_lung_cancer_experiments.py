@@ -9,7 +9,7 @@ def run_experiments_for_lung_cancer_dataset(data_split_strategy: DataSplitStrate
     dataset = Dataset.LUNG_CANCER
     model_fn = LungCancerCNN
     num_runs = 1
-    subset_ratio = 0.5
+    subset_ratio = 1
     seed = 42
     num_clients = 5
     num_rounds = 10

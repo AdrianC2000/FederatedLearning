@@ -8,7 +8,7 @@ from experiments.runners.federated_runner import run_all_experiments
 def run_experiments_for_chest_xray_dataset(data_split_strategy: DataSplitStrategy = DataSplitStrategy.STRATIFIED_EQUAL):
     dataset = Dataset.CHEST_XRAY
     model_fn = ChestXRayCNN
-    num_runs = 1
+    num_runs = 5
     subset_ratio = 1.0
     seed = 42
     num_clients = 5

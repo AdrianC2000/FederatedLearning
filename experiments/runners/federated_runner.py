@@ -56,7 +56,7 @@ def run_fedprox_experiments(shared_args: dict, baseline_results: dict[str, Model
                             runners: list):
     print("\n[Running FedProx experiments]")
     fedprox_start = time.time()
-    for mu in [1, 5, 10]:
+    for mu in [0.001, 0.01, 0.1]:
         print(f"→ FedProx | mu = {mu}")
         prox_start = time.time()
         prox_args = {**shared_args, "fed_prox_mu": mu}
