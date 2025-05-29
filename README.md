@@ -11,10 +11,10 @@ This repository implements a comprehensive framework for conducting federated le
   - [Chest X-Ray](https://www.kaggle.com/datasets/prashant268/chest-xray-covid19-pneumonia)  
   - [Lung & Colon Cancer](https://www.kaggle.com/datasets/andrewmvd/lung-and-colon-cancer-histopathological-image)
 - **Flexible configuration**:
-  - **Number of clients** – specify the total number of participating clients (e.g., 10, 50, 100)
-  - **Local epochs** – number of local training epochs before aggregation (e.g., 1–10)
+  - **Number of clients** – specify the total number of participating clients
+  - **Local epochs** – number of local training epochs before aggregation
   - **Batch size** – size of the training batches on the client side
-  - **Learning rate** – learning rate used by the local optimizer (e.g., 0.001)
+  - **Learning rate** – learning rate used by the local optimizer
   - **Dataset split strategy**
     Specifies how the dataset is partitioned among clients. This setting affects the statistical distribution of data per client and can significantly influence the difficulty and realism of federated learning       scenarios.
     - **`STRATIFIED_EQUAL`**  
@@ -49,7 +49,7 @@ Some of the additionally generated plots are presented below:
 
 ### Federated Proximal with Homomorphic Encryption
 
-Different values of μ (e.g., 0.001, 0.01, 0.1)
+Different values of μ (0.001, 0.01, 0.1)
 
 <p align="center">
   <img src="images/he_fedprox/accuracy.png" width="500"/>
